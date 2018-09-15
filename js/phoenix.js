@@ -504,6 +504,24 @@ export class Channel {
     return pushEvent
   }
 
+  /**
+   * More memory/CPU efficient push, but does not guarantee delivery if connection is lost.
+   * @param {string} event
+   * @param {Object} payload
+   */
+  pushUnreliable(event, payload) {
+    if(!this.joinedOnce){
+      throw(`tried to push '${event}' to '${this.topic}' before joining. Use channel.join() before pushing events`)
+    }
+
+    this.socket.push({
+      topic: this.topic,
+      event, payload,
+      ref: null,
+      join_ref: this.joinRef()
+    }, false);
+  }
+
   /** Leaves the channel
    *
    * Unsubscribes from server events, and
@@ -916,19 +934,22 @@ export class Socket {
   /**
    * @param {Object} data
    */
-  push(data){
-    let {topic, event, payload, ref, join_ref} = data
-    let callback = () => {
+  push(data, reliable = true){
+    if (this.canLog()) {
+      let {topic, event, payload, ref, join_ref} = data
+      this.log("push", `${topic} ${event} (${join_ref}, ${ref})`, payload)
+    }
+
+    if(this.isConnected()){
       this.encode(data, result => {
         this.conn.send(result)
-      })
-    }
-    if (this.canLog()) this.log("push", `${topic} ${event} (${join_ref}, ${ref})`, payload)
-    if(this.isConnected()){
-      callback()
-    }
-    else {
-      this.sendBuffer.push(callback)
+      });
+    } else if (reliable) {
+      this.sendBuffer.push(() => {
+        this.encode(data, result => {
+          this.conn.send(result)
+        })
+      });
     }
   }
 
