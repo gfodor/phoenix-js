@@ -382,17 +382,17 @@ export class Channel {
     })
     this.onClose( () => {
       this.rejoinTimer.reset()
-      this.socket.log("channel", `close ${this.topic} ${this.joinRef()}`)
+      if (this.socket.canLog()) this.socket.log("channel", `close ${this.topic} ${this.joinRef()}`)
       this.state = CHANNEL_STATES.closed
       this.socket.remove(this)
     })
     this.onError( reason => { if(this.isLeaving() || this.isClosed()){ return }
-      this.socket.log("channel", `error ${this.topic}`, reason)
+      if (this.socket.canLog()) this.socket.log("channel", `error ${this.topic}`, reason)
       this.state = CHANNEL_STATES.errored
       this.rejoinTimer.scheduleTimeout()
     })
     this.joinPush.receive("timeout", () => { if(!this.isJoining()){ return }
-      this.socket.log("channel", `timeout ${this.topic} (${this.joinRef()})`, this.joinPush.timeout)
+      if (this.socket.canLog()) this.socket.log("channel", `timeout ${this.topic} (${this.joinRef()})`, this.joinPush.timeout)
       let leavePush = new Push(this, CHANNEL_EVENTS.leave, closure({}), this.timeout)
       leavePush.send()
       this.state = CHANNEL_STATES.errored
@@ -523,7 +523,7 @@ export class Channel {
   leave(timeout = this.timeout){
     this.state = CHANNEL_STATES.leaving
     let onClose = () => {
-      this.socket.log("channel", `leave ${this.topic}`)
+      if (this.socket.canLog()) this.socket.log("channel", `leave ${this.topic}`)
       this.trigger(CHANNEL_EVENTS.close, "leave")
     }
     let leavePush = new Push(this, CHANNEL_EVENTS.leave, closure({}), timeout)
@@ -557,7 +557,7 @@ export class Channel {
     let isLifecycleEvent = CHANNEL_LIFECYCLE_EVENTS.indexOf(event) >= 0
 
     if(joinRef && isLifecycleEvent && joinRef !== this.joinRef()){
-      this.socket.log("channel", "dropping outdated message", {topic, event, payload, joinRef})
+      if (this.socket.canLog()) this.socket.log("channel", "dropping outdated message", {topic, event, payload, joinRef})
       return false
     } else {
       return true
@@ -719,7 +719,7 @@ export class Socket {
     this.reconnectAfterMs     = opts.reconnectAfterMs || function(tries){
       return [1000, 2000, 5000, 10000][tries - 1] || 10000
     }
-    this.logger               = opts.logger || function(){} // noop
+    this.logger               = opts.logger || null
     this.longpollerTimeout    = opts.longpollerTimeout || 20000
     this.params               = closure(opts.params || {})
     this.endPoint             = `${endPoint}/${TRANSPORTS.websocket}`
@@ -789,6 +789,11 @@ export class Socket {
   log(kind, msg, data){ this.logger(kind, msg, data) }
 
   /**
+   * Checks if logging is possible.
+   */
+  canLog(){ return this.logger !== null }
+
+  /**
    * Registers callbacks for connection open events
    *
    * @example socket.onOpen(function(){ console.info("the socket was opened") })
@@ -822,7 +827,7 @@ export class Socket {
    * @private
    */
   onConnOpen(){
-    this.log("transport", `connected to ${this.endPointURL()}`)
+    if (this.canLog()) this.log("transport", `connected to ${this.endPointURL()}`)
     this.flushSendBuffer()
     this.reconnectTimer.reset()
     if(!this.conn.skipHeartbeat){
@@ -846,7 +851,7 @@ export class Socket {
   }
 
   onConnClose(event){
-    this.log("transport", "close", event)
+    if (this.canLog()) this.log("transport", "close", event)
     this.triggerChanError()
     clearInterval(this.heartbeatTimer)
     if(event && event.code !== WS_CLOSE_NORMAL) {
@@ -859,7 +864,7 @@ export class Socket {
    * @private
    */
   onConnError(error){
-    this.log("transport", error)
+    if (this.canLog()) this.log("transport", error)
     this.triggerChanError()
     this.stateChangeCallbacks.error.forEach( callback => callback(error) )
   }
@@ -918,7 +923,7 @@ export class Socket {
         this.conn.send(result)
       })
     }
-    this.log("push", `${topic} ${event} (${join_ref}, ${ref})`, payload)
+    if (this.canLog()) this.log("push", `${topic} ${event} (${join_ref}, ${ref})`, payload)
     if(this.isConnected()){
       callback()
     }
@@ -941,7 +946,7 @@ export class Socket {
   sendHeartbeat(){ if(!this.isConnected()){ return }
     if(this.pendingHeartbeatRef){
       this.pendingHeartbeatRef = null
-      this.log("transport", "heartbeat timeout. Attempting to re-establish connection")
+      if (this.canLog()) this.log("transport", "heartbeat timeout. Attempting to re-establish connection")
       this.conn.close(WS_CLOSE_NORMAL, "hearbeat timeout")
       return
     }
@@ -961,7 +966,7 @@ export class Socket {
       let {topic, event, payload, ref, join_ref} = msg
       if(ref && ref === this.pendingHeartbeatRef){ this.pendingHeartbeatRef = null }
 
-      this.log("receive", `${payload.status || ""} ${topic} ${event} ${ref && "(" + ref + ")" || ""}`, payload)
+      if (this.canLog()) this.log("receive", `${payload.status || ""} ${topic} ${event} ${ref && "(" + ref + ")" || ""}`, payload)
       this.channels.filter( channel => channel.isMember(topic, event, payload, join_ref) )
                    .forEach( channel => channel.trigger(event, payload, ref, join_ref) )
       this.stateChangeCallbacks.message.forEach( callback => callback(msg) )
