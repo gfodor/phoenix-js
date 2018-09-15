@@ -572,9 +572,8 @@ export class Channel {
    */
   isMember(topic, event, payload, joinRef){
     if(this.topic !== topic){ return false }
-    let isLifecycleEvent = CHANNEL_LIFECYCLE_EVENTS.indexOf(event) >= 0
 
-    if(joinRef && isLifecycleEvent && joinRef !== this.joinRef()){
+    if(joinRef && joinRef !== this.joinRef() && CHANNEL_LIFECYCLE_EVENTS.indexOf(event) >= 0){
       if (this.socket.canLog()) this.socket.log("channel", "dropping outdated message", {topic, event, payload, joinRef})
       return false
     } else {
@@ -609,8 +608,12 @@ export class Channel {
     let handledPayload = this.onMessage(event, payload, ref, joinRef)
     if(payload && !handledPayload){ throw("channel onMessage callbacks must return the payload, modified or unmodified") }
 
-    this.bindings.filter( bind => bind.event === event)
-                 .map( bind => bind.callback(handledPayload, ref, joinRef || this.joinRef()))
+    for (let i = 0; i < this.bindings.length; i++) {
+      const bind = this.bindings[i];
+      if (bind.event === event) {
+        bind.callback(handledPayload, ref, joinRef || this.joinRef());
+      }
+    }
   }
 
   /**
@@ -988,9 +991,17 @@ export class Socket {
       if(ref && ref === this.pendingHeartbeatRef){ this.pendingHeartbeatRef = null }
 
       if (this.canLog()) this.log("receive", `${payload.status || ""} ${topic} ${event} ${ref && "(" + ref + ")" || ""}`, payload)
-      this.channels.filter( channel => channel.isMember(topic, event, payload, join_ref) )
-                   .forEach( channel => channel.trigger(event, payload, ref, join_ref) )
-      this.stateChangeCallbacks.message.forEach( callback => callback(msg) )
+
+      for (let i = 0; i < this.channels.length; i++) {
+        const channel = this.channels[i];
+        if (channel.isMember(topic, event, payload, join_ref)) {
+          channel.trigger(event, payload, ref, join_ref);
+        }
+      }
+
+      for (let i = 0; i < this.stateChangeCallbacks.message; i++) {
+        this.stateChangeCallbacks.message[i](msg);
+      }
     })
   }
 }
