@@ -3,7 +3,7 @@
   "version": "1.3.0",
   "description": "The official JavaScript client for the Phoenix web framework.",
   "license": "MIT",
-  "main": "./priv/static/phoenix.js",
+  "main": "./js/phoenix.js",
   "repository": {
     "type": "git",
     "url": "git://github.com/phoenixframework/phoenix.git"
