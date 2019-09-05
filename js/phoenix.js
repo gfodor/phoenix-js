@@ -995,7 +995,7 @@ export class Socket {
   /**
    * @param {Object} data
    */
-  push(data){
+  push(data, reliable = true){
     if (this.hasLogger()) {
       let {topic, event, payload, ref, join_ref} = data
       this.log("push", `${topic} ${event} (${join_ref}, ${ref})`, payload)
