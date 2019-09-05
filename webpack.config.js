@@ -6,23 +6,24 @@ module.exports = {
     filename: 'phoenix.js',
     path: path.resolve(__dirname, '../priv/static'),
     library: 'Phoenix',
-    libraryTarget: 'umd'
+    libraryTarget: 'umd',
+    globalObject: 'this'
   },
   module: {
     rules: [
-      {
-        test: /\.js$/,
-        exclude: /node_modules/,
-        use: {
-          loader: 'babel-loader'
-        }
-      },
       {
         test: path.resolve(__dirname, './js/phoenix.js'),
         use: [{
           loader: 'expose-loader',
           options: 'Phoenix'
         }]
+      },
+      {
+        test: /\.js$/,
+        exclude: /node_modules/,
+        use: {
+          loader: 'babel-loader'
+        }
       }
     ]
   },
