@@ -188,7 +188,7 @@
 const globalSelf = typeof self !== "undefined" ? self : null
 const phxWindow = typeof window !== "undefined" ? window : null
 const global = globalSelf || phxWindow || this
-const VSN = "2.0.0"
+const DEFAULT_VSN = "2.0.0"
 const SOCKET_STATES = {connecting: 0, open: 1, closing: 2, closed: 3}
 const DEFAULT_TIMEOUT = 10000
 const WS_CLOSE_NORMAL = 1000
@@ -372,15 +372,17 @@ export class Channel {
     this.joinedOnce  = false
     this.joinPush    = new Push(this, CHANNEL_EVENTS.join, this.params, this.timeout)
     this.pushBuffer  = []
+    this.stateChangeRefs = [];
 
     this.rejoinTimer = new Timer(() => {
       if(this.socket.isConnected()){ this.rejoin() }
     }, this.socket.rejoinAfterMs)
-    this.socket.onError(() => this.rejoinTimer.reset())
-    this.socket.onOpen(() => {
-      this.rejoinTimer.reset()
-      if(this.isErrored()){ this.rejoin() }
-    })
+    this.stateChangeRefs.push(this.socket.onError(() => this.rejoinTimer.reset()))
+    this.stateChangeRefs.push(this.socket.onOpen(() => {
+        this.rejoinTimer.reset()
+        if(this.isErrored()){ this.rejoin() }
+      })
+    )
     this.joinPush.receive("ok", () => {
       this.state = CHANNEL_STATES.joined
       this.rejoinTimer.reset()
@@ -472,6 +474,20 @@ export class Channel {
   }
 
   /**
+   * Unsubscribes off of channel events
+   *
+   * Use the ref returned from a channel.on() to unsubscribe one
+   * handler, or pass nothing for the ref to unsubscribe all
+   * handlers for the given event.
+   *
+   * @example
+   * // Unsubscribe the do_stuff handler
+   * const ref1 = channel.on("event", do_stuff)
+   * channel.off("event", ref1)
+   *
+   * // Unsubscribe all handlers from event
+   * channel.off("event")
+   *
    * @param {string} event
    * @param {integer} ref
    */
@@ -487,6 +503,16 @@ export class Channel {
   canPush(){ return this.socket.isConnected() && this.isJoined() }
 
   /**
+   * Sends a message `event` to phoenix with the payload `payload`.
+   * Phoenix receives this in the `handle_in(event, payload, socket)`
+   * function. if phoenix replies or it times out (default 10000ms),
+   * then optionally the reply can be received.
+   *
+   * @example
+   * channel.push("event")
+   *   .receive("ok", payload => console.log("phoenix replied:", payload))
+   *   .receive("error", err => console.log("phoenix errored", err))
+   *   .receive("timeout", () => console.log("timed out pushing"))
    * @param {string} event
    * @param {Object} payload
    * @param {number} [timeout]
@@ -532,7 +558,7 @@ export class Channel {
    *
    * Triggers onClose() hooks
    *
-   * To receive leave acknowledgements, use the a `receive`
+   * To receive leave acknowledgements, use the `receive`
    * hook to bind to the server ack, ie:
    *
    * @example
@@ -600,16 +626,10 @@ export class Channel {
   /**
    * @private
    */
-  sendJoin(timeout){
+  rejoin(timeout = this.timeout){ if(this.isLeaving()){ return }
+    this.socket.leaveOpenTopic(this.topic)
     this.state = CHANNEL_STATES.joining
     this.joinPush.resend(timeout)
-  }
-
-  /**
-   * @private
-   */
-  rejoin(timeout = this.timeout){ if(this.isLeaving()){ return }
-    this.sendJoin(timeout)
   }
 
   /**
@@ -619,9 +639,10 @@ export class Channel {
     let handledPayload = this.onMessage(event, payload, ref, joinRef)
     if(payload && !handledPayload){ throw new Error("channel onMessage callbacks must return the payload, modified or unmodified") }
 
-    for (let i = 0; i < this.bindings.length; i++) {
-      const bind = this.bindings[i]
-      if(bind.event !== event){ continue }
+    let eventBindings = this.bindings.filter(bind => bind.event === event)
+
+    for (let i = 0; i < eventBindings.length; i++) {
+      let bind = eventBindings[i]
       bind.callback(handledPayload, ref, joinRef || this.joinRef())
     }
   }
@@ -739,6 +760,9 @@ export let Serializer = {
  *
  * Defaults to "arraybuffer"
  *
+ * @param {vsn} [opts.vsn] - The serializer's protocol version to send on connect.
+ *
+ * Defaults to DEFAULT_VSN.
 */
 export class Socket {
   constructor(endPoint, opts = {}){
@@ -761,7 +785,7 @@ export class Socket {
       this.decode = this.defaultDecoder
     }
     if(phxWindow && phxWindow.addEventListener){
-      phxWindow.addEventListener("beforeunload", e => {
+      phxWindow.addEventListener("unload", e => {
         if(this.conn){
           this.unloaded = true
           this.abnormalClose("unloaded")
@@ -788,6 +812,7 @@ export class Socket {
     this.longpollerTimeout    = opts.longpollerTimeout || 20000
     this.params               = closure(opts.params || {})
     this.endPoint             = `${endPoint}/${TRANSPORTS.websocket}`
+    this.vsn                  = opts.vsn || DEFAULT_VSN
     this.heartbeatTimer       = null
     this.pendingHeartbeatRef  = null
     this.reconnectTimer       = new Timer(() => {
@@ -809,7 +834,7 @@ export class Socket {
    */
   endPointURL(){
     let uri = Ajax.appendParams(
-      Ajax.appendParams(this.endPoint, this.params()), {vsn: VSN})
+      Ajax.appendParams(this.endPoint, this.params()), {vsn: this.vsn})
     if(uri.charAt(0) !== "/"){ return uri }
     if(uri.charAt(1) === "/"){ return `${this.protocol()}:${uri}` }
 
@@ -817,9 +842,13 @@ export class Socket {
   }
 
   /**
-   * @param {Function} callback
-   * @param {integer} code
-   * @param {string} reason
+   * Disconnects the socket
+   *
+   * See https://developer.mozilla.org/en-US/docs/Web/API/CloseEvent#Status_codes for valid status codes.
+   *
+   * @param {Function} callback - Optional callback which is called after socket is disconnected.
+   * @param {integer} code - A status code for disconnection (Optional).
+   * @param {string} reason - A textual description of the reason to disconnect. (Optional)
    */
   disconnect(callback, code, reason){
     this.closeWasClean = true
@@ -870,13 +899,21 @@ export class Socket {
    *
    * @param {Function} callback
    */
-  onOpen(callback){ this.stateChangeCallbacks.open.push(callback) }
+  onOpen(callback){
+    let ref = this.makeRef()
+    this.stateChangeCallbacks.open.push([ref, callback])
+    return ref
+  }
 
   /**
    * Registers callbacks for connection close events
    * @param {Function} callback
    */
-  onClose(callback){ this.stateChangeCallbacks.close.push(callback) }
+  onClose(callback){
+    let ref = this.makeRef()
+    this.stateChangeCallbacks.close.push([ref, callback])
+    return ref
+  }
 
   /**
    * Registers callbacks for connection error events
@@ -885,25 +922,33 @@ export class Socket {
    *
    * @param {Function} callback
    */
-  onError(callback){ this.stateChangeCallbacks.error.push(callback) }
+  onError(callback){
+    let ref = this.makeRef()
+    this.stateChangeCallbacks.error.push([ref, callback])
+    return ref
+  }
 
   /**
    * Registers callbacks for connection message events
    * @param {Function} callback
    */
-  onMessage(callback){ this.stateChangeCallbacks.message.push(callback) }
+  onMessage(callback){
+    let ref = this.makeRef()
+    this.stateChangeCallbacks.message.push([ref, callback])
+    return ref
+  }
 
   /**
    * @private
    */
   onConnOpen(){
-    if (this.hasLogger()) this.log("transport", `connected to ${this.endPointURL()}`)
+    if(this.hasLogger()) this.log("transport", `connected to ${this.endPointURL()}`)
     this.unloaded = false
     this.closeWasClean = false
     this.flushSendBuffer()
     this.reconnectTimer.reset()
     this.resetHeartbeat()
-    this.stateChangeCallbacks.open.forEach( callback => callback() )
+    this.stateChangeCallbacks.open.forEach(([, callback]) => callback() )
   }
 
   /**
@@ -917,12 +962,46 @@ export class Socket {
   }
 
   teardown(callback, code, reason){
-    if(this.conn){
-      this.conn.onclose = function(){} // noop
-      if(code){ this.conn.close(code, reason || "") } else { this.conn.close() }
-      this.conn = null
+    if (!this.conn) {
+      return callback && callback()
     }
-    callback && callback()
+
+    this.waitForBufferDone(() => {
+      if (this.conn) {
+        if(code){ this.conn.close(code, reason || "") } else { this.conn.close() }
+      }
+
+      this.waitForSocketClosed(() => {
+        if (this.conn) {
+          this.conn.onclose = function(){} // noop
+          this.conn = null
+        }
+
+        callback && callback()
+      })
+    })
+  }
+
+  waitForBufferDone(callback, tries = 1) {
+    if (tries === 5 || !this.conn || !this.conn.bufferedAmount) {
+      callback()
+      return
+    }
+
+    setTimeout(() => {
+      this.waitForBufferDone(callback, tries + 1)
+    }, 150 * tries)
+  }
+
+  waitForSocketClosed(callback, tries = 1) {
+    if (tries === 5 || !this.conn || this.conn.readyState === SOCKET_STATES.closed) {
+      callback()
+      return
+    }
+
+    setTimeout(() => {
+      this.waitForSocketClosed(callback, tries + 1)
+    }, 150 * tries)
   }
 
   onConnClose(event){
@@ -932,7 +1011,7 @@ export class Socket {
     if(!this.closeWasClean){
       this.reconnectTimer.scheduleTimeout()
     }
-    this.stateChangeCallbacks.close.forEach( callback => callback(event) )
+    this.stateChangeCallbacks.close.forEach(([, callback]) => callback(event) )
   }
 
   /**
@@ -941,7 +1020,7 @@ export class Socket {
   onConnError(error){
     if (this.hasLogger()) this.log("transport", error)
     this.triggerChanError()
-    this.stateChangeCallbacks.error.forEach( callback => callback(error) )
+    this.stateChangeCallbacks.error.forEach(([, callback]) => callback(error) )
   }
 
   /**
@@ -973,10 +1052,27 @@ export class Socket {
   isConnected(){ return this.connectionState() === "open" }
 
   /**
+   * @private
+   *
    * @param {Channel}
    */
   remove(channel){
+    this.off(channel.stateChangeRefs)
     this.channels = this.channels.filter(c => c.joinRef() !== channel.joinRef())
+  }
+
+  /**
+   * Removes `onOpen`, `onClose`, `onError,` and `onMessage` registrations.
+   *
+   * @param {refs} - list of refs returned by calls to
+   *                 `onOpen`, `onClose`, `onError,` and `onMessage`
+   */
+  off(refs) {
+    for(let key in this.stateChangeCallbacks){
+      this.stateChangeCallbacks[key] = this.stateChangeCallbacks[key].filter(([ref]) => {
+        return refs.indexOf(ref) === -1
+      })
+    }
   }
 
   /**
@@ -1019,7 +1115,8 @@ export class Socket {
     return this.ref.toString()
   }
 
-  sendHeartbeat(){ if(!this.isConnected()){ return }
+  sendHeartbeat(){
+    if(!this.isConnected()){ return }
     if(this.pendingHeartbeatRef){
       this.pendingHeartbeatRef = null
       if (this.hasLogger()) this.log("transport", "heartbeat timeout. Attempting to re-establish connection")
@@ -1056,9 +1153,18 @@ export class Socket {
       }
 
       for (let i = 0; i < this.stateChangeCallbacks.message.length; i++) {
-        this.stateChangeCallbacks.message[i](msg)
+        let [, callback] = this.stateChangeCallbacks.message[i]
+        callback(msg)
       }
     })
+  }
+
+  leaveOpenTopic(topic){
+    let dupChannel = this.channels.find(c => c.topic === topic && (c.isJoined() || c.isJoining()))
+    if(dupChannel){
+      if(this.hasLogger()) this.log("transport", `leaving duplicate topic "${topic}"`)
+      dupChannel.leave()
+    }
   }
 }
 
@@ -1124,6 +1230,10 @@ export class LongPoll {
           this.onopen()
           this.poll()
           break
+        case 403:
+          this.onerror()
+          this.close()
+          break
         case 0:
         case 500:
           this.onerror()
@@ -1156,9 +1266,7 @@ export class Ajax {
       let req = new XDomainRequest() // IE8, IE9
       this.xdomainRequest(req, method, endPoint, body, timeout, ontimeout, callback)
     } else {
-      let req = global.XMLHttpRequest ?
-                  new global.XMLHttpRequest() : // IE7+, Firefox, Chrome, Opera, Safari
-                  new ActiveXObject("Microsoft.XMLHTTP") // IE6, IE5
+      let req = new global.XMLHttpRequest(); // IE7+, Firefox, Chrome, Opera, Safari
       this.xhrRequest(req, method, endPoint, accept, body, timeout, ontimeout, callback)
     }
   }

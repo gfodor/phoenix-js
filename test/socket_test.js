@@ -11,10 +11,12 @@ let socket
 describe("with transports", done =>{
   before(() => {
     window.WebSocket = WebSocket
+    window.XMLHttpRequest = sinon.useFakeXMLHttpRequest()
   })
 
   after((done) => {
     window.WebSocket = null
+    window.XMLHttpRequest = null
     done()
   })
 
@@ -263,28 +265,33 @@ describe("with transports", done =>{
       socket = new Socket("/socket")
     })
 
-    it("removes existing connection", () => {
+    it("removes existing connection", (done) => {
       socket.connect()
       socket.disconnect()
-
-      assert.equal(socket.conn, null)
+      socket.disconnect(() => {
+        assert.equal(socket.conn, null)
+        done()
+      })
     })
 
-    it("calls callback", () => {
+    it("calls callback", (done) => {
       let count = 0
       socket.connect()
-      socket.disconnect(() => count++)
-
-      assert.equal(count, 1)
+      socket.disconnect(() => {
+        count++
+        assert.equal(count, 1)
+        done()
+      })
     })
 
-    it("calls connection close callback", () => {
+    it("calls connection close callback", (done) => {
       socket.connect()
       const spy = sinon.spy(socket.conn, "close")
 
-      socket.disconnect(null, "code", "reason")
-
-      assert(spy.calledWith("code", "reason"))
+      socket.disconnect(() => {
+          assert(spy.calledWith(1000, "reason"))
+          done()
+        }, 1000, "reason")
     })
 
     it("does not throw when no connection", () => {
@@ -295,14 +302,6 @@ describe("with transports", done =>{
   })
 
   describe("connectionState", () => {
-    before(() => {
-      window.XMLHttpRequest = sinon.useFakeXMLHttpRequest()
-    })
-
-    after(() => {
-      window.XMLHttpRequest = null
-    })
-
     beforeEach(() => {
       socket = new Socket("/socket")
     })
@@ -390,7 +389,11 @@ describe("with transports", done =>{
       sinon.stub(channel1, "joinRef").returns(1)
       sinon.stub(channel2, "joinRef").returns(2)
 
+      assert.equal(socket.stateChangeCallbacks.open.length, 2)
+
       socket.remove(channel1)
+
+      assert.equal(socket.stateChangeCallbacks.open.length, 1)
 
       assert.equal(socket.channels.length, 1)
 
@@ -402,14 +405,6 @@ describe("with transports", done =>{
   describe("push", () => {
     const data = {topic: "topic", event: "event", payload: "payload", ref: "ref"}
     const json = encode(data)
-
-    before(() => {
-      window.XMLHttpRequest = sinon.useFakeXMLHttpRequest()
-    })
-
-    after(() => {
-      window.XMLHttpRequest = null
-    })
 
     beforeEach(() => {
       socket = new Socket("/socket")
@@ -467,14 +462,6 @@ describe("with transports", done =>{
   })
 
   describe("sendHeartbeat", () => {
-    before(() => {
-      window.XMLHttpRequest = sinon.useFakeXMLHttpRequest()
-    })
-
-    after(() => {
-      window.XMLHttpRequest = null
-    })
-
     beforeEach(() => {
       socket = new Socket("/socket")
       socket.connect()
@@ -483,7 +470,7 @@ describe("with transports", done =>{
     it("closes socket when heartbeat is not ack'd within heartbeat window", () => {
       let closed = false
       socket.conn.readyState = 1 // open
-      socket.conn.onclose = () => closed = true
+      socket.conn.close = () => closed = true
       socket.sendHeartbeat()
       assert.equal(closed, false)
 
@@ -513,14 +500,6 @@ describe("with transports", done =>{
   })
 
   describe("flushSendBuffer", () => {
-    before(() => {
-      window.XMLHttpRequest = sinon.useFakeXMLHttpRequest()
-    })
-
-    after(() => {
-      window.XMLHttpRequest = null
-    })
-
     beforeEach(() => {
       socket = new Socket("/socket")
       socket.connect()
@@ -646,17 +625,19 @@ describe("with transports", done =>{
       assert.ok(spy.calledOnce)
     })
 
-    it('schedules reconnectTimer timeout if connection cannot be made after a previous clean disconnect', () => {
+    it('schedules reconnectTimer timeout if connection cannot be made after a previous clean disconnect', (done) => {
       const spy = sinon.spy(socket.reconnectTimer, 'scheduleTimeout')
 
-      socket.disconnect();
-      socket.connect();
+      socket.disconnect(() => {
+        socket.connect();
 
-      const event = { code: 1001 }
+        const event = { code: 1001 }
 
-      socket.onConnClose(event)
+        socket.onConnClose(event)
 
-      assert.ok(spy.calledOnce)
+        assert.ok(spy.calledOnce)
+        done()
+      });
     })
 
     it("triggers onClose callback", () => {
